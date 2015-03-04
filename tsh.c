@@ -179,6 +179,10 @@ void eval(char *cmdline)
   char buf[MAXLINE]; /*holds modified command line */
   int bg; /* should job run in bg or fg?*/
   pid_t pid; /*process id */
+  sigset_t oldMask, blockedSignals;
+  sigemptyset(&oldMask);
+  sigaddset(&oldMask, SIGCHLD);
+  sigemptyset(&blockedSignals);
 
   strcpy(buf, cmdline); //copy cmdline to buf variable
   bg = parseline(buf, argv); /*parse the cmdline, return 1 for bg, 1 for fg*/
@@ -194,39 +198,60 @@ void eval(char *cmdline)
     //jobs
     //fg
     //bg
-  }else{
+  }else{ //not a built in command, try to do the other things
     printf("%s: Command not builtin. \n", argv [0]);
+    sigprocmask(SIG_BLOCK, &oldMask, NULL);
     pid = Fork();
+    
     if (pid == 0){ /*Child runs user job */
-      
+      sigprocmask(SIG_UNBLOCK, &oldMask, NULL);
       if(bg == 0){ //process should be in foreground
 	//do it and quit
 	printf("Process in the foreground");
-	if (execve(argv[0], argv, environ) < 0) {
+	setpgid(0, 0);
+	if (execve(argv[0], argv, environ) < 0) { //if thing doesn't work,crash
 	  printf("Command not found");
 	  exit(0);
        	}
-      }else{
-	printf("We're in the background");
-	exit(0);
-      }
+       
+      }else{ //process is in background (finish this up)
+	printf("We're in the background \n");
+	//if (execve(argv[0], argv, environ) < 0){
+	//printf("Command not found \n");
+	  
+	//exit(0);
+	//}
+	return;
+       
+	//exit(0);
+	}
+
     }else{ //Parent
       addjob(jobs, pid, bg, buf);
-      if (!bg){ 
-	//if(execve(argv[0], argv, environ) < 0){
-	//addjob(jobs,pid, bg, buf);
+      sigprocmask(SIG_UNBLOCK, &oldMask, NULL);
+      if (!bg){ //if in foreground, wait until process is finished 
 	int status;
 	printf("PID: %d \n", pid);
-	if (waitpid(pid, &status, 0) < 0){
-	  //wait for child to finish in foreground
-	  //inspect results for error
-	  /// printf("%s: Command not found \n", argv[0]);
+       	if (waitpid(pid, &status, 0) < 0){
+	  if(errno == ECHILD){
+	  }else
 	  //check waitpid return value, if error throw
 	  unix_error("waitfg: waitpid error");
+	}else{
+	  sigprocmask(SIG_BLOCK, &oldMask, NULL);
+	  deletejob(jobs, pid);
+	  sigprocmask(SIG_UNBLOCK, &oldMask, NULL);
+
 	}
+      
+	return;
+
       }else{
+	//addjob(jobs, pid, bg, buf);
 	//child is in background, let it run
+	
 	//return to prompt
+	printf("return to prompt \n");
 	return;
       }
       
@@ -317,10 +342,12 @@ int builtin_cmd(char **argv)
   }
   if(!strcmp(argv[0], "bg")){
     printf("background builtin \n");
+    //do_bgfg(**argv);
       return 1;
   }
   if(!strcmp(argv[0], "fg")){
     printf("foreground builtin \n");
+    //do_bgfg(**argv);
     return 1;
   }
     
@@ -334,6 +361,17 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+  if(!strcmp(argv[0], "bg")){
+    pid_t jobpid = argv[1]; //pid of job
+    job_t jobline;
+    
+    jobline = getjobpid(jobs, jobpid);
+    // printf(jobline[3]);
+    
+  }else{ //fg command
+    //argv[1]; //pid of job
+
+  }
     return;
 }
 
@@ -342,6 +380,8 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+  //This is probably what we just did with the signal blocking...probably don't
+  // need to implement this function then... 
     return;
 }
 
@@ -359,9 +399,10 @@ void waitfg(pid_t pid)
 void sigchld_handler(int sig) 
 {
   pid_t pid;
-
-  while ((pid = waitpid(-1, NULL, 0)) <0)
-    unix_error("waitpid error");
+  int status; 
+  // while ((pid = waitpid(-1, NULL, 0)) <0)
+  pid = waitpid(-1, &status, WNOHANG);  
+  // unix_error("waitpid error");
   printf("Handler reaped child %d\n", (int)pid);
   deletejob(jobs, pid);
 
@@ -377,12 +418,11 @@ void sigchld_handler(int sig)
 void sigint_handler(int sig) 
 {
   printf("Caught SIGINT\n");
-  
-    //foreach job delete jobs
- 
-  exit(0);
- 
-    return;
+
+  if(fgpid(jobs) == 0){ //check if pid is current foreground child. not working
+    exit(0);
+  }
+  return;
 }
 
 /*
@@ -395,7 +435,7 @@ void sigtstp_handler(int sig)
 {
   printf("Caught SIGSTP\n");
   
-  exit(0);
+  //exit(0);
    return;
 }
 
